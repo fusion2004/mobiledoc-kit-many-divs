@@ -150,6 +150,7 @@ function triggerEnter(editor) {
   editor.triggerEvent(editor.element, 'keydown', event);
 }
 
+/*
 // IE11 and earlier cannot exec the `insertText` command. This version
 // check takes the place of actually detecting support for the
 // functionality, which would be very difficult.
@@ -157,6 +158,7 @@ const canExecCommandInsertText = (() => {
   let userAgent = navigator.userAgent;
   return userAgent.indexOf("MSIE ") === -1 && userAgent.indexOf("Trident/") === -1;
 })();
+*/
 
 // keyCodes and charCodes are similar but not the same.;
 function keyCodeForChar(letter) {
@@ -174,6 +176,7 @@ function keyCodeForChar(letter) {
   return keyCode;
 }
 
+/*
 function _insertTextIntoDOM(letter) {
   if (canExecCommandInsertText) {
     document.execCommand('insertText', false, letter);
@@ -193,6 +196,7 @@ function _insertTextIntoDOM(letter) {
     selection.addRange(nextCursorRange);
   }
 }
+*/
 
 function insertText(editor, string) {
   if (!string && editor) { throw new Error('Must pass `editor` to `insertText`'); }
@@ -200,27 +204,39 @@ function insertText(editor, string) {
   string.split('').forEach(letter => {
     let stop = false;
     let keyCode = keyCodeForChar(letter);
+    let charCode = letter.charCodeAt(0);
+    let preventDefault = () => stop = true;
     let keydown = createMockEvent('keydown', editor.element, {
       keyCode,
-      preventDefault() { stop = true; }
+      charCode,
+      preventDefault
+    });
+    let keypress = createMockEvent('keypress', editor.element, {
+      keyCode,
+      charCode,
     });
     let keyup = createMockEvent('keyup', editor.element, {
       keyCode,
-      preventDefault() { stop = true; }
+      charCode,
+      preventDefault
     });
-    let input = createMockEvent('input', editor.element, {
-      preventDefault() { stop = true; }
-    });
+    //let input = createMockEvent('input', editor.element, {
+      //preventDefault() { stop = true; }
+    //});
 
     editor.triggerEvent(editor.element, 'keydown', keydown);
     if (stop) {
       return;
     }
-    _insertTextIntoDOM(letter);
-    editor.triggerEvent(editor.element, 'input', input);
+    editor.triggerEvent(editor.element, 'keypress', keypress);
     if (stop) {
       return;
     }
+    //_insertTextIntoDOM(letter);
+    //editor.triggerEvent(editor.element, 'input', input);
+    //if (stop) {
+      //return;
+    //}
     editor.triggerEvent(editor.element, 'keyup', keyup);
   });
 }
@@ -231,8 +247,11 @@ function triggerKeyCommand(editor, string, modifiers=[]) {
   if (typeof modifiers === "number") {
     modifiers = [modifiers]; // convert singular to array
   }
+  let charCode = string.toUpperCase().charCodeAt(0);
+  let keyCode = charCode;
   let keyEvent = createMockEvent('keydown', editor.element, {
-    keyCode: string.toUpperCase().charCodeAt(0),
+    charCode,
+    keyCode,
     shiftKey: contains(modifiers, MODIFIERS.SHIFT),
     metaKey: contains(modifiers, MODIFIERS.META),
     ctrlKey: contains(modifiers, MODIFIERS.CTRL)

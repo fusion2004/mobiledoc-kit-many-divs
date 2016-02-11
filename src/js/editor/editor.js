@@ -15,10 +15,9 @@ import mobiledocRenderers from '../renderers/mobiledoc';
 
 import { mergeWithOptions } from '../utils/merge';
 import { clearChildNodes, addClassName } from '../utils/dom-utils';
-import { forEach, filter, contains } from '../utils/array-utils';
+import { forEach, filter } from '../utils/array-utils';
 import { setData } from '../utils/element-utils';
 import mixin from '../utils/mixin';
-import EventListenerMixin from '../utils/event-listener';
 import Cursor from '../utils/cursor';
 import Range from '../utils/cursor/range';
 import PostNodeBuilder from '../models/post-node-builder';
@@ -28,25 +27,20 @@ import {
 import {
   DEFAULT_KEY_COMMANDS, buildKeyCommand, findKeyCommands, validateKeyCommand
 } from './key-commands';
-import { capitalize } from '../utils/string-utils';
 import LifecycleCallbacksMixin from '../utils/lifecycle-callbacks';
 import { CARD_MODES } from '../models/card';
 import { detect } from '../utils/array-utils';
-import {
-  parsePostFromPaste,
-  setClipboardCopyData
-} from '../utils/paste-utils';
-import { DIRECTION } from 'mobiledoc-kit/utils/key';
-import { TAB, SPACE } from 'mobiledoc-kit/utils/characters';
 import assert from '../utils/assert';
 import MutationHandler from 'mobiledoc-kit/editor/mutation-handler';
 import { MOBILEDOC_VERSION } from 'mobiledoc-kit/renderers/mobiledoc';
 import EditHistory from 'mobiledoc-kit/editor/edit-history';
+import Logger from 'mobiledoc-kit/utils/logger';
+import EventListener from 'mobiledoc-kit/editor/event-listener';
+
+Logger.enable();
+Logger.enableAll();
 
 export const EDITOR_ELEMENT_CLASS_NAME = '__mobiledoc-editor';
-
-const ELEMENT_EVENTS  = ['keydown', 'keyup', 'cut', 'copy', 'paste'];
-const DOCUMENT_EVENTS = ['mouseup'];
 
 const defaults = {
   placeholder: 'Write here...',
@@ -84,7 +78,6 @@ class Editor {
   constructor(options={}) {
     assert('editor create accepts an options object. For legacy usage passing an element for the first argument, consider the `html` option for loading DOM or HTML posts. For other cases call `editor.render(domNode)` after editor creation',
           (options && !options.nodeType));
-    this._elementListeners = [];
     this._views = [];
     this.isEditable = null;
     this._parserPlugins = options.parserPlugins || [];
@@ -104,6 +97,8 @@ class Editor {
     this._renderTree = new RenderTree(this.post);
 
     this._editHistory = new EditHistory(this, this.undoDepth);
+    this._eventListener = new EventListener(this);
+    this._mutationHandler = new MutationHandler(this);
   }
 
   addView(view) {
@@ -160,8 +155,8 @@ class Editor {
     clearChildNodes(element);
 
     this.element = element;
-    this._mutationHandler = new MutationHandler(this);
-    this._mutationHandler.startObserving();
+    this._mutationHandler.init();
+    this._eventListener.init();
 
     if (this.isEditable === null) {
       this.enableEditing();
@@ -177,8 +172,6 @@ class Editor {
     if (this.autofocus) {
       this.element.focus();
     }
-
-    this._setupListeners();
   }
 
   _addTooltip() {
@@ -225,6 +218,17 @@ class Editor {
     this.keyCommands.unshift(keyCommand);
   }
 
+  deleteRange(range) {
+    if (range.isCollapsed) {
+      return;
+    }
+
+    this.run(postEditor => {
+      let nextPosition = postEditor.deleteRange(range);
+      postEditor.setRange(new Range(nextPosition));
+    });
+  }
+
   /**
    * @param {KeyEvent} event optional
    * @private
@@ -233,10 +237,7 @@ class Editor {
     let { range } = this;
 
     if (!range.isCollapsed) {
-      this.run(postEditor => {
-        let nextPosition = postEditor.deleteRange(range);
-        postEditor.setRange(new Range(nextPosition));
-      });
+      this.deleteRange(range);
     } else if (event) {
       let key = Key.fromEvent(event);
       this.run(postEditor => {
@@ -420,10 +421,8 @@ class Editor {
       this.cursor.clearSelection();
       this.element.blur();
     }
-    if (this._mutationHandler) {
-      this._mutationHandler.destroy();
-    }
-    this.removeAllEventListeners();
+    this._mutationHandler.destroy();
+    this._eventListener.destroy();
     this.removeAllViews();
     this._renderer.destroy();
   }
@@ -562,44 +561,6 @@ class Editor {
     this.addCallback(CALLBACK_QUEUES.CURSOR_DID_CHANGE, callback);
   }
 
-  _setupListeners() {
-    ELEMENT_EVENTS.forEach(eventName => {
-      this.addEventListener(this.element, eventName,
-        (...args) => this.handleEvent(eventName, ...args)
-      );
-    });
-
-    DOCUMENT_EVENTS.forEach(eventName => {
-      this.addEventListener(document, eventName,
-        (...args) => this.handleEvent(eventName, ...args)
-      );
-    });
-  }
-
-  handleEvent(eventName, ...args) {
-    if (contains(ELEMENT_EVENTS, eventName)) {
-      let [{target: element}] = args;
-      if (!this.cursor.isAddressable(element)) {
-        // abort handling this event
-        return true;
-      }
-    }
-
-    const methodName = `handle${capitalize(eventName)}`;
-    assert(`No handler "${methodName}" for ${eventName}`, !!this[methodName]);
-
-    this[methodName](...args);
-  }
-
-  handleMouseup() {
-    // mouseup does not correctly report a selection until the next tick
-    setTimeout(() => this._reportSelectionState(), 0);
-  }
-
-  handleKeyup() {
-    this._reportSelectionState();
-  }
-
   /*
      The following events/sequences can create a selection and are handled:
        * mouseup -- can happen anywhere in document, must wait until next tick to read selection
@@ -621,104 +582,13 @@ class Editor {
     });
   }
 
-  handleKeydown(event) {
-    if (!this.isEditable || this.handleKeyCommand(event)) {
-      return;
-    }
-
-    if (this.post.isBlank) {
-      this._insertEmptyMarkupSectionAtCursor();
-    }
-
-    let key = Key.fromEvent(event);
-    let range, nextPosition;
-
-    switch(true) {
-      case key.isHorizontalArrow():
-        range = this.cursor.offsets;
-        let position = range.tail;
-        if (range.direction === DIRECTION.BACKWARD) {
-          position = range.head;
-        }
-        nextPosition = position.move(key.direction);
-        if (
-          position.section.isCardSection ||
-          (position.marker && position.marker.isAtom) ||
-          (nextPosition && nextPosition.marker && nextPosition.marker.isAtom)
-        ) {
-          if (nextPosition) {
-            let newRange;
-            if (key.isShift()) {
-              newRange = range.moveFocusedPosition(key.direction);
-            } else {
-              newRange = new Range(nextPosition);
-            }
-            this.selectRange(newRange);
-            event.preventDefault();
-          }
-        }
-        break;
-      case key.isDelete():
-        this.handleDeletion(event);
-        event.preventDefault();
-        break;
-      case key.isEnter():
-        this.handleNewline(event);
-        break;
-      case key.isPrintable():
-        range = this.range;
-        let { isCollapsed } = range;
-        nextPosition = range.head;
-
-        if (this.handleExpansion(event)) {
-          event.preventDefault();
-          break;
-        }
-
-        let shouldPreventDefault = isCollapsed && range.head.section.isCardSection;
-
-        let didEdit = false;
-        let isMarkerable = range.head.section.isMarkerable;
-        let isVisibleWhitespace = isMarkerable && (key.isTab() || key.isSpace());
-
-        this.run(postEditor => {
-          if (!isCollapsed) {
-            nextPosition = postEditor.deleteRange(range);
-            didEdit = true;
-          }
-
-          if (isVisibleWhitespace) {
-            let toInsert = key.isTab() ? TAB : SPACE;
-            shouldPreventDefault = true;
-            didEdit = true;
-            nextPosition = postEditor.insertText(nextPosition, toInsert);
-          }
-
-          if (nextPosition.marker && nextPosition.marker.isAtom) {
-            didEdit = true;
-            // ensure that the cursor is properly repositioned one character forward
-            // after typing on either side of an atom
-            this.addCallbackOnce(CALLBACK_QUEUES.DID_REPARSE, () => {
-              let position = nextPosition.move(DIRECTION.FORWARD);
-              let nextRange = new Range(position);
-
-              this.run(postEditor => postEditor.setRange(nextRange));
-            });
-          }
-          if (nextPosition && nextPosition !== range.head) {
-            didEdit = true;
-            postEditor.setRange(new Range(nextPosition));
-          }
-
-          if (!didEdit) {
-            // this ensures we don't push an empty snapshot onto the undo stack
-            postEditor.cancelSnapshot();
-          }
-        });
-        if (shouldPreventDefault) {
-          event.preventDefault();
-        }
-        break;
+  toggleMarkup(markup) {
+    markup = this.post.builder.createMarkup(markup);
+    if (this.range.isCollapsed) {
+      this._currentMarkups = this._currentMarkups || [];
+      this._currentMarkups.push(markup);
+    } else {
+      this.run(postEditor => postEditor.toggleMarkup(markup));
     }
   }
 
@@ -763,40 +633,6 @@ class Editor {
     return false;
   }
 
-  handleCut(event) {
-    event.preventDefault();
-
-    this.handleCopy(event);
-    this.handleDeletion();
-  }
-
-  handleCopy(event) {
-    event.preventDefault();
-
-    setClipboardCopyData(event, this);
-  }
-
-  handlePaste(event) {
-    event.preventDefault();
-
-    const { head: position } = this.cursor.offsets;
-
-    if (position.section.isCardSection) {
-      return;
-    }
-
-    if (this.cursor.hasSelection()) {
-      this.handleDeletion();
-    }
-
-    let pastedPost = parsePostFromPaste(event, this.builder, this._parserPlugins);
-
-    this.run(postEditor => {
-      let nextPosition = postEditor.insertPost(position, pastedPost);
-      postEditor.setRange(new Range(nextPosition));
-    });
-  }
-
   // @private
   _setCardMode(cardSection, mode) {
     const renderNode = cardSection.renderNode;
@@ -811,10 +647,13 @@ class Editor {
   get hasRendered() {
     return !!this.element;
   }
+
+  triggerEvent(context, eventName, event) {
+    this._eventListener._trigger(context, eventName, event);
+  }
 }
 
 mixin(Editor, EventEmitter);
-mixin(Editor, EventListenerMixin);
 mixin(Editor, LifecycleCallbacksMixin);
 
 export default Editor;

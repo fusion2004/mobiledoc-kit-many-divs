@@ -347,7 +347,7 @@ test('editor ignores events when focus is inside a card', (assert) => {
   assert.hasElement('#simple-card-input', 'precond - renders card');
 
   let inputEvents = 0;
-  editor.handleKeyup = () => inputEvents++;
+  editor._eventListener.keyup = () => inputEvents++;
 
   let input = $('#simple-card-input')[0];
   Helpers.dom.triggerEvent(input, 'keyup');
