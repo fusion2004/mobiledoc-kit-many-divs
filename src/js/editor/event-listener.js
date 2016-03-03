@@ -6,8 +6,10 @@ import {
 import Range from 'mobiledoc-kit/utils/cursor/range';
 import { filter, forEach, contains } from 'mobiledoc-kit/utils/array-utils';
 import Key from 'mobiledoc-kit/utils/key';
-import { TAB } from 'mobiledoc-kit/utils/characters';
+// FIXME ? import { TAB } from 'mobiledoc-kit/utils/characters';
 import { DIRECTION } from 'mobiledoc-kit/utils/key';
+import Logger from 'mobiledoc-kit/utils/logger';
+let log = Logger.for('event-listener');
 
 const ELEMENT_EVENT_TYPES = ['keydown', 'keyup', 'cut', 'copy', 'paste', 'keypress'];
 const DOCUMENT_EVENT_TYPES = ['mouseup'];
@@ -86,10 +88,12 @@ export default class EventListener {
     event.preventDefault();
 
     let { editor } = this;
-    editor.run(postEditor => {
-      postEditor.insertText(editor.range.head, key.toString(), editor._currentMarkups);
-      this._currentMarkups = [];
-    });
+    if (editor.handleExpansion(event)) {
+      return;
+    } else {
+      log(`keypress: inserting text: ${key.toString()}`);
+      editor.insertText(key.toString());
+    }
   }
 
   keydown(event) {
@@ -107,6 +111,7 @@ export default class EventListener {
 
     switch(true) {
       case key.isHorizontalArrow():
+        log('keydown: horizontal arrow');
         range = editor.cursor.offsets;
         let position = range.tail;
         if (range.direction === DIRECTION.BACKWARD) {
@@ -131,54 +136,12 @@ export default class EventListener {
         }
         break;
       case key.isDelete():
+        log('keydown: delete');
         editor.handleDeletion(event);
         event.preventDefault();
         break;
       case key.isEnter():
         editor.handleNewline(event);
-        break;
-      case key.isPrintable():
-        range = editor.range;
-        let { isCollapsed } = range;
-        nextPosition = range.head;
-
-        if (editor.handleExpansion(event)) {
-          event.preventDefault();
-          break;
-        }
-
-        // let shouldPreventDefault = isCollapsed && range.head.section.isCardSection;
-
-        let shouldPreventDefault = false;
-        let didEdit = false;
-        let isMarkerable = range.head.section.isMarkerable;
-        // let isVisibleWhitespace = isMarkerable && (key.isTab() || key.isSpace());
-
-        editor.run(postEditor => {
-          if (!isCollapsed) {
-            nextPosition = postEditor.deleteRange(range);
-            didEdit = true;
-          }
-
-          if (isMarkerable && key.isTab()) {
-            shouldPreventDefault = true;
-            didEdit = true;
-            nextPosition = postEditor.insertText(nextPosition, TAB);
-          }
-
-          if (!didEdit) {
-            // editor ensures we don't push an empty snapshot onto the undo stack
-            postEditor.cancelSnapshot();
-          }
-
-          if (nextPosition && nextPosition !== range.head) {
-            didEdit = true;
-            postEditor.setRange(new Range(nextPosition));
-          }
-        });
-        if (shouldPreventDefault) {
-          event.preventDefault();
-        }
         break;
     }
   }

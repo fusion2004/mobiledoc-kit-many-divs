@@ -38,7 +38,10 @@ import Logger from 'mobiledoc-kit/utils/logger';
 import EventListener from 'mobiledoc-kit/editor/event-listener';
 
 Logger.enable();
-Logger.enableAll();
+Logger.enableTypes([
+  'mutation-handler',
+  'event-listener'
+]);
 
 export const EDITOR_ELEMENT_CLASS_NAME = '__mobiledoc-editor';
 
@@ -631,6 +634,20 @@ class Editor {
       }
     }
     return false;
+  }
+
+  insertText(text) {
+    this.run(postEditor => {
+      let range = this.range;
+      let position = range.head;
+
+      if (!range.isCollapsed) {
+        position = postEditor.deleteRange(range);
+      }
+
+      postEditor.insertText(position, text, this._currentMarkups);
+      this._currentMarkups = [];
+    });
   }
 
   // @private
