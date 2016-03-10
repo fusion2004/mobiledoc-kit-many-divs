@@ -5,7 +5,7 @@ import { MARKUP_SECTION_TYPE } from './types';
 
 // valid values of `tagName` for a MarkupSection
 export const VALID_MARKUP_SECTION_TAGNAMES = [
-  'p', 'h3', 'h2', 'h1', 'blockquote', 'pull-quote'
+  'p', 'h3', 'h2', 'h1', 'blockquote', 'pull-quote', 'left-align', 'center-align', 'right-align'
 ].map(normalizeTagName);
 
 // valid element names for a MarkupSection. A MarkupSection with a tagName
